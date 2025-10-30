@@ -1,11 +1,36 @@
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use futures::{SinkExt, StreamExt};
+use std::collections::HashSet;
+use std::net::Ipv4Addr;
+
+use anyhow::Result;
+use clap::Parser;
+use clap_derive::Parser;
+use cli_log::*;
+use pnet_packet::Packet;
+use pnet_packet::ip::{self};
+use pnet_packet::ipv4::{self};
+use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 use tun::{self, AbstractDevice, BoxError, Configuration};
 
+use common::{ClientHelloMessage, ServerHelloMessage};
+
+const BIND_ADDRESS: &str = "localhost:9001";
+
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
+    #[arg(short, long)]
+    address: Ipv4Addr,
+
+    #[arg(short, long)]
+    tun_name: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    init_cli_log!();
     let token = CancellationToken::new();
     let token_clone = token.clone();
 
@@ -14,63 +39,105 @@ async fn main() -> Result<(), BoxError> {
         true
     })?;
 
+    println!("[*] Starting server...");
     start(token).await?;
     ctrlc.await?;
     Ok(())
 }
 
+// Main function for starting the server
 async fn start(token: CancellationToken) -> Result<(), BoxError> {
+    let socket = UdpSocket::bind(BIND_ADDRESS).await?;
+
+    let args = Args::parse();
+    let tun_name = args.tun_name;
+    let address = args.address;
+
+    println!(
+        "[*] Binded to UDP Socket at {}",
+        socket.local_addr().unwrap()
+    );
+
     let mut config = Configuration::default();
-
     config
-        .address((10, 0, 0, 2))
-        .netmask((255, 255, 255, 0))
-        .destination((10, 0, 0, 1))
-        .up();
+        .name(tun_name.unwrap_or("".to_string()))
+        .up()
+        .address(address)
+        .netmask((255, 255, 255, 0));
 
-    let mut dev = tun::create_as_async(&config)?;
-    let size = dev.mtu()? as usize + tun::PACKET_INFORMATION_LENGTH;
+    let tun = tun::create_as_async(&config).unwrap();
+    println!(
+        "TUN: {}, address: {}",
+        tun.tun_name().unwrap(),
+        tun.address().unwrap()
+    );
 
-    let socket = UdpSocket::bind("localhost:9899").await?;
-    let remote_peer = "localhost:9898";
+    let mut framed_tun = tun.into_framed();
 
-    let mut tun_buf = vec![0; 4096];
-    let mut socket_buf = vec![0; 4096];
+    let mut sock_buf = [0; 2048];
 
+    let mut known_conns = HashSet::new();
+
+    // Main event loop
     loop {
         tokio::select! {
             _ = token.cancelled() => {
-                println!("Quitting");
+                println!("[*] Quitting");
                 break;
             },
-            result = socket.recv_from(&mut socket_buf) => {
+            result = socket.recv_from(&mut sock_buf) => {
                 let (len, peer) = result?;
-                println!("UDP -> TUN: {len} bytes from {peer}");
+                println!("[*] Recv {len} from {peer}");
 
-                if let Some(packet) = pnet_packet::ipv4::Ipv4Packet::new(&socket_buf[..len]) {
-                    println!("IPv4: {} -> {}", packet.get_source(), packet.get_destination());
+                if !known_conns.contains(&peer) {
+
+                    let client_hello = serde_json::from_slice::<ClientHelloMessage>(&sock_buf[..len]);
+                    println!("{:?}", client_hello);
+
+                    if let Ok(client_hello) = client_hello {
+                        println!("successful client hello");
+                        println!("[*] Adding new peer {peer} to hashset");
+                        known_conns.insert(peer);
+                    }
+                    else {
+                        println!("[-] Invalid client hello received");
+                    }
+
                 }
+                else {
+                    let ipv4_packet = ipv4::Ipv4Packet::new(&sock_buf[..len]).unwrap();
 
-                else if let Some(packet) = pnet_packet::ipv6::Ipv6Packet::new(&socket_buf[..len]) {
-                    println!("IPv6: {} -> {}", packet.get_source(), packet.get_destination());
+                    framed_tun.send(ipv4_packet.packet().to_vec()).await?;
+
+                    println!("[*] Wrote to TUN");
                 }
-
-                dev.write(&socket_buf[..len]).await?;
 
             },
-            result = dev.read(&mut tun_buf) => {
-                let len = result?;
-                println!("TUN -> UDP: {len} btyes");
+            Some(packet) = framed_tun.next() => {
+                //if let Ok(packet) = packet {
 
-                if let Some(packet) = pnet_packet::ipv4::Ipv4Packet::new(&tun_buf[..len]) {
-                    println!("IPv4: {} -> {}", packet.get_source(), packet.get_destination());
-                }
+                //    match packet[0] >> 4 {
+                //        4 => {
+                //            println!("ipv4");
+                //            let ipv4_packet = ipv4::Ipv4Packet::new(&packet[..]).unwrap();
 
-                else if let Some(packet) = pnet_packet::ipv6::Ipv6Packet::new(&tun_buf[..len]) {
-                    println!("IPv6: {} -> {}", packet.get_source(), packet.get_destination());
-                }
+                //            println!("{:?}", ipv4_packet);
+                //            match ipv4_packet.get_next_level_protocol() {
+                //                ip::IpNextHeaderProtocol(1) => {
+                //                    println!("icmp recvd");
+                //                },
+                //                _ => {},
+                //            }
 
-                socket.send_to(&tun_buf[..len], remote_peer).await?;
+                //        },
+                //        6 => {
+                //        },
+                //        _ => {},
+                //    }
+
+                //}
+
+
             },
         }
     }

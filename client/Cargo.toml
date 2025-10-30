@@ -12,3 +12,9 @@ tokio-util = "0.7.16"
 tun = { version = "0.8.4", features = ["async"] }
 common = {path = "../common"}
 pnet_packet = "0.35.0"
+anyhow = "1.0.100"
+cli-log = "2.1.0"
+clap_derive = "4.5.49"
+clap = "4.5.51"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
