@@ -61,12 +61,8 @@ impl ClientRegistry {
         self.clients.get(peer).cloned()
     }
 
-    pub fn get_client_mut(&mut self, peer: &SocketAddr) -> Option<&mut ClientConnection> {
-        self.clients.get_mut(peer)
-    }
-
     pub fn get_all_clients(&self) -> Vec<ClientConnection> {
-        self.clients.values().map(|client| client.clone()).collect()
+        self.clients.values().cloned().collect()
     }
 
     pub fn get_route(&self, ip: &Ipv4Addr) -> Option<SocketAddr> {
@@ -94,5 +90,11 @@ impl ClientRegistry {
             return Err(NoSuchClient.into());
         }
         Ok(())
+    }
+}
+
+impl Default for ClientRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -3,6 +3,7 @@ use clap::Parser;
 use clap_derive::Parser;
 use cli_log::*;
 use std::net::Ipv4Addr;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
@@ -24,19 +25,40 @@ async fn main() -> Result<()> {
 
     let token = CancellationToken::new();
     let token_clone = token.clone();
-    let ctrlc = ctrlc2::AsyncCtrlC::new(move || {
-        token_clone.cancel();
-        true
-    })?;
 
     let args = Args::parse();
     let tun_name = args.tun_name;
     let address = args.address;
     let port = args.port;
 
-    println!("[*] Starting server...");
-    server::start(token, tun_name, address, port).await?;
+    let mut task_set = JoinSet::new();
+    task_set.spawn(server::start(token, tun_name, address, port));
 
-    ctrlc.await?;
+    println!("[*] Starting server...");
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                token_clone.cancel();
+                break;
+            },
+            Some(res) = task_set.join_next() => {
+                match res {
+                    Ok(t) if t.is_err() => {
+                        error!("server ended with error: {t:?}");
+                    },
+                    Ok(t) if t.is_ok() => {
+                        info!("server finished");
+                    },
+                    Err(e) => {
+                        error!("main server join falied: {e}");
+                    }
+                    _ => {},
+                }
+            },
+        }
+    }
+
+    task_set.join_all().await;
+
     Ok(())
 }

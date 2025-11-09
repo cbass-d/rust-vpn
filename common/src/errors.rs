@@ -21,3 +21,14 @@ impl fmt::Display for UnexpectedMessage {
         write!(f, "Unexpected message received")
     }
 }
+
+#[derive(Debug)]
+pub struct OneShotRecvClosed;
+
+impl Error for OneShotRecvClosed {}
+
+impl fmt::Display for OneShotRecvClosed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Oneshot channel receiver dropped")
+    }
+}

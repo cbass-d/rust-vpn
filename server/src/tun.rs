@@ -64,7 +64,7 @@ pub async fn run(
             message = tun_rx.recv() => {
                 match message {
                     Some(TunMessage::WritePacket(packet)) => {
-                        let _ = framed_tun.send(packet).await?;
+                        framed_tun.send(packet).await?;
                     },
                     _ => {},
                 }

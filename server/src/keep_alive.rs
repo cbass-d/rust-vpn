@@ -1,6 +1,4 @@
-use crate::{
-    KeepAliveMessage, KeepAliveType, UnexpectedMessage, UnexpectedSource, manager::ManagerMessages,
-};
+use crate::{KeepAliveMessage, KeepAliveType, UnexpectedMessage, UnexpectedSource};
 use anyhow::Result;
 use std::{net::SocketAddr, time::Duration};
 use tokio::{net::UdpSocket, time::timeout};
@@ -16,6 +14,8 @@ pub async fn run(socket: &UdpSocket, peer: &SocketAddr) -> Result<()> {
     match socket.send_to(&keep_alive[..], peer).await {
         Ok(_) => {
             let mut buf = [0; 1024];
+
+            // If no response received in 5 secs, mark client as dead
             if let Ok((len, reply_peer)) =
                 timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await?
             {
