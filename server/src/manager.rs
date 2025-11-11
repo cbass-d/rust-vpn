@@ -1,35 +1,36 @@
 use anyhow::Result;
 use cli_log::error;
-use common::errors::OneShotRecvClosed;
+use common::errors::Errors;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     time::Instant,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use x25519_dalek::PublicKey;
 
-use crate::registry::{ClientConnection, ClientRegistry};
+use crate::{peer::Peer, registry::Registry};
 
 #[derive(Debug)]
 pub enum ManagerMessages {
-    AddClient(SocketAddr, oneshot::Sender<ClientConnection>),
+    AddPeer(SocketAddr, PublicKey, oneshot::Sender<Peer>),
     UpdateLastSeen(SocketAddr),
     ResolveRoute(Ipv4Addr, oneshot::Sender<Option<SocketAddr>>),
-    GetAllClients(oneshot::Sender<Vec<ClientConnection>>),
-    GetClient(SocketAddr, oneshot::Sender<Option<ClientConnection>>),
-    RemoveClient(SocketAddr),
+    GetAllPeers(oneshot::Sender<Vec<Peer>>),
+    GetPeer(SocketAddr, oneshot::Sender<Option<Peer>>),
+    RemovePeer(SocketAddr),
 }
 
 pub async fn run(
     mut rx: mpsc::UnboundedReceiver<ManagerMessages>,
     cancel_token: CancellationToken,
 ) -> Result<()> {
-    // This task will be owner of all client connections data
+    // This task will be owner of all peer connections data
     // * socket_addr
-    // * client ip
+    // * peer ip
     // * route
     // * etc.
-    let mut registry = ClientRegistry::new();
+    let mut registry = Registry::new();
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => {
@@ -39,41 +40,41 @@ pub async fn run(
 
             message = rx.recv() => {
                 match message {
-                    Some(ManagerMessages::AddClient(peer, tx)) => {
-                        let _ = registry.add_client(peer);
-                        if let Some(client) = registry.get_client(&peer) {
-                            if tx.send(client).is_err() {
-                                error!("add client response failed: receiver dropped");
-                                return Err(OneShotRecvClosed.into());
+                    Some(ManagerMessages::AddPeer(peer, client_pub, tx)) => {
+                        let _ = registry.add_peer(peer, client_pub);
+                        if let Some(peer) = registry.get_peer(&peer) {
+                            if tx.send(peer).is_err() {
+                                error!("add peer response failed: receiver dropped");
+                                return Err(Errors::OneShotClosed);
                             }
                         }
                     },
                     Some(ManagerMessages::UpdateLastSeen(peer)) => {
                         registry.update_last_seen(peer, Instant::now())?;
                     },
-                    Some(ManagerMessages::ResolveRoute(client_ip, tx)) => {
-                        let route = registry.get_route(&client_ip);
+                    Some(ManagerMessages::ResolveRoute(peer_ip, tx)) => {
+                        let route = registry.get_route(&peer_ip);
                         if tx.send(route).is_err() {
                             error!("get route respnonse failed: receiver dropped");
-                            return Err(OneShotRecvClosed.into());
+                            return Err(Errors::OneShotClosed);
                         }
                     },
-                    Some(ManagerMessages::GetAllClients(tx)) => {
-                        let all_clients = registry.get_all_clients();
-                        if tx.send(all_clients).is_err() {
+                    Some(ManagerMessages::GetAllPeers(tx)) => {
+                        let all_peers = registry.get_all_peers();
+                        if tx.send(all_peers).is_err() {
                             error!("get route respnonse failed: receiver dropped");
-                            return Err(OneShotRecvClosed.into());
+                            return Err(Errors::OneShotClosed);
                         }
                     },
-                    Some(ManagerMessages::GetClient(peer, tx)) => {
-                        let client = registry.get_client(&peer);
-                        if tx.send(client).is_err() {
+                    Some(ManagerMessages::GetPeer(peer, tx)) => {
+                        let peer = registry.get_peer(&peer);
+                        if tx.send(peer).is_err() {
                             error!("get route respnonse failed: receiver dropped");
-                            return Err(OneShotRecvClosed.into());
+                            return Err(Errors::OneShotClosed);
                         }
                     },
-                    Some(ManagerMessages::RemoveClient(peer)) => {
-                        let _ = registry.remove_client(peer);
+                    Some(ManagerMessages::RemovePeer(peer)) => {
+                        let _ = registry.remove_peer(peer);
                     },
 
                     _ => {},

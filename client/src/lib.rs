@@ -9,6 +9,7 @@ use common::messages::*;
 use std::net::SocketAddr;
 use tokio::{net::UdpSocket, sync::mpsc};
 use tokio_util::sync::CancellationToken;
+use x25519_dalek::{EphemeralSecret, PublicKey, x25519};
 
 use crate::manager::ManagerMessages;
 
@@ -25,11 +26,15 @@ pub async fn run(
         socket.local_addr().unwrap()
     );
 
+    // Create one time use DH key pair
+    let eph_secret = EphemeralSecret::random();
+    let pub_key = PublicKey::from(&eph_secret);
+
     // Peform handshake with server (3 max-retries)
     let mut max_retries = 3;
-    let assigned_addr = loop {
-        match handshake::run(&socket, server).await {
-            Ok(assigned_addr) => break assigned_addr,
+    let (assigned_addr, server_pub) = loop {
+        match handshake::run(&socket, server, pub_key).await {
+            Ok((assigned_addr, server_pub)) => break (assigned_addr, server_pub),
             Err(e) => {
                 if max_retries == 0 {
                     panic!("[-] Server handshake failed: {e}");
@@ -40,6 +45,9 @@ pub async fn run(
             }
         }
     };
+
+    let shared_secret = eph_secret.diffie_hellman(&server_pub);
+    println!("shared secret: {:?}", shared_secret.to_bytes());
 
     // Channels for message/packet passing:
     // * messages for manager

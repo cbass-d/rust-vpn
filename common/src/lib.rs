@@ -1,7 +1,9 @@
 pub mod errors;
 pub mod messages;
 
-pub enum ClientState {
+static NOISE_PATTERN: &'static str = "Noise_IK_22519_ChaChaPoly_BLAKE2s";
+
+pub enum PeerState {
     Handshaking,
     Connected,
     Closed,

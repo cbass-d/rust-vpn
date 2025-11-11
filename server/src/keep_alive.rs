@@ -1,5 +1,6 @@
-use crate::{KeepAliveMessage, KeepAliveType, UnexpectedMessage, UnexpectedSource};
+use crate::{KeepAliveMessage, KeepAliveType};
 use anyhow::Result;
+use common::errors::Errors;
 use std::{net::SocketAddr, time::Duration};
 use tokio::{net::UdpSocket, time::timeout};
 
@@ -20,13 +21,13 @@ pub async fn run(socket: &UdpSocket, peer: &SocketAddr) -> Result<()> {
                 timeout(Duration::from_secs(5), socket.recv_from(&mut buf)).await?
             {
                 if *peer != reply_peer {
-                    return Err(UnexpectedSource.into());
+                    return Err(Errors::UnexpectedSourece);
                 }
 
                 let msg = serde_json::from_slice::<KeepAliveMessage>(&buf[..len])?;
 
                 if msg.msg_type != KeepAliveType::Reply {
-                    return Err(UnexpectedMessage.into());
+                    return Err(Errors::UnexpectedMessage);
                 }
             }
         }

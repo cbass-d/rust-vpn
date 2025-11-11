@@ -2,17 +2,19 @@ pub mod errors;
 pub mod handshake;
 pub mod keep_alive;
 pub mod manager;
+pub mod peer;
 pub mod registry;
 pub mod socket;
 pub mod tun;
 
 pub use cli_log::*;
-pub use common::{errors::*, messages::*};
+pub(crate) use common::messages::*;
 
 use anyhow::Result;
 use std::net::Ipv4Addr;
 use tokio::{net::UdpSocket, sync::mpsc};
 use tokio_util::sync::CancellationToken;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::manager::ManagerMessages;
 
@@ -38,6 +40,9 @@ pub async fn start(
     let (tun_tx, tun_rx) = mpsc::unbounded_channel::<TunMessages>();
     let (socket_tx, socket_rx) = mpsc::unbounded_channel::<SocketMessages>();
 
+    let eph_secret = StaticSecret::random();
+    let pub_key = PublicKey::from(&eph_secret);
+
     // Spawn each of the task in a task set, for easier management of joining,
     // aborting, logging, etc.
     let mut task_set = tokio::task::JoinSet::new();
@@ -57,6 +62,8 @@ pub async fn start(
         manager_tx.clone(),
         tun_tx.clone(),
         socket_rx,
+        pub_key,
+        eph_secret,
         token.clone(),
     ));
 

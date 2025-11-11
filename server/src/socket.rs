@@ -1,6 +1,7 @@
 use cli_log::info;
 use pnet_packet::{Packet, ipv4};
 use std::{net::SocketAddr, time::Duration};
+use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret, x25519};
 
 use anyhow::Result;
 use common::messages::{ClientHelloMessage, SocketMessages, TunMessages};
@@ -10,13 +11,15 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{handshake, keep_alive, manager::ManagerMessages, registry::ClientConnection};
+use crate::{handshake, keep_alive, manager::ManagerMessages, peer::Peer};
 
 pub async fn run(
     socket: UdpSocket,
     manager_tx: mpsc::UnboundedSender<ManagerMessages>,
     tun_tx: mpsc::UnboundedSender<TunMessages>,
     mut socket_rx: mpsc::UnboundedReceiver<SocketMessages>,
+    server_pub: PublicKey,
+    server_priv: StaticSecret,
     cancel_token: CancellationToken,
 ) -> Result<()> {
     // Task responsible for UDP socket:
@@ -33,15 +36,15 @@ pub async fn run(
                 break;
             },
             Ok((len, peer)) = socket.recv_from(&mut sock_buf[..]) => {
-                let (tx, rx) = oneshot::channel::<Option<ClientConnection>>();
-                let get_client = ManagerMessages::GetClient(peer, tx);
+                let (tx, rx) = oneshot::channel::<Option<Peer>>();
+                let get_client = ManagerMessages::GetPeer(peer, tx);
                 manager_tx.send(get_client)?;
 
                 // Match if client already exists, if not add to client registry
                 let client_res = rx.await?;
                 match client_res {
                     Some(client) => {
-                        let update_last_seen = ManagerMessages::UpdateLastSeen(client.sock_addr);
+                        let update_last_seen = ManagerMessages::UpdateLastSeen(client.endpoint);
                         manager_tx.send(update_last_seen)?;
 
                         // Match IP Version
@@ -76,14 +79,16 @@ pub async fn run(
                         // Check for valid client hello and perform handshake (assignment of ip to
                         // client)
                         if let Ok(client_hello) = serde_json::from_slice::<ClientHelloMessage>(&sock_buf[..len]) {
-                            let (tx, rx) = oneshot::channel::<ClientConnection>();
-                            let add_client = ManagerMessages::AddClient(peer, tx);
+                            let (tx, rx) = oneshot::channel::<Peer>();
+                            let add_client = ManagerMessages::AddPeer(peer, client_hello.client_pub, tx);
                             manager_tx.send(add_client)?;
                             let client = rx.await?;
 
-                            let handshake_res = handshake::run(&socket, client.assigned_ip, &client.sock_addr, client_hello).await;
+                            let handshake_res = handshake::run(&socket, client.assigned_ip, &client.endpoint, server_pub).await;
                             match handshake_res {
-                                Ok(()) => {},
+                                Ok(()) => {
+                                    let shared = server_priv.diffie_hellman(&client_hello.client_pub);
+                                },
                                 Err(e) => {
                                     println!("[-] Handshake failed for peer {peer}: {e}");
                             },
@@ -101,18 +106,18 @@ pub async fn run(
                 }
             },
             _ = interval.tick() => {
-                let (tx, rx) = oneshot::channel::<Vec<ClientConnection>>();
-                let list_clients = ManagerMessages::GetAllClients(tx);
+                let (tx, rx) = oneshot::channel::<Vec<Peer>>();
+                let list_clients = ManagerMessages::GetAllPeers(tx);
                 manager_tx.send(list_clients)?;
 
                 // Keep alive for all clients in registry
                 let clients = rx.await?;
                 for client in clients {
-                    match keep_alive::run(&socket, &client.sock_addr).await {
+                    match keep_alive::run(&socket, &client.endpoint).await {
                         Ok(()) => {},
                         Err(e) => {
-                            println!("[-] Keep alive for {} ({}) failed: {e}", client.assigned_ip, client.sock_addr);
-                            let remove_client = ManagerMessages::RemoveClient(client.sock_addr);
+                            println!("[-] Keep alive for {} ({}) failed: {e}", client.assigned_ip, client.endpoint);
+                            let remove_client = ManagerMessages::RemovePeer(client.endpoint);
                             manager_tx.send(remove_client).unwrap();
                         },
                     }
